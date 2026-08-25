@@ -29,6 +29,7 @@ load("@bazel_lib//lib:expand_make_vars.bzl", "expand_locations", "expand_variabl
 load("@bazel_lib//lib:paths.bzl", "BASH_RLOCATION_FUNCTION", "to_rlocation_path")
 load("//py/private:py_library.bzl", _py_library = "py_library_utils")
 load("//py/private:py_semantics.bzl", _py_semantics = "semantics")
+load("//py/private:pyc.bzl", "PYC_ATTRS", "compile_pycs", "make_pyc_info", "own_compile_sources", "pyc_wired")
 load("//py/private:transitions.bzl", "python_transition")
 load("//py/private/toolchain:types.bzl", "EXEC_TOOLS_TOOLCHAIN", "PY_TOOLCHAIN")
 load(":py_venv_exec.bzl", _py_venv_exec = "py_venv_exec")
@@ -104,6 +105,7 @@ def _assemble_venv_target(ctx):
         info = VirtualenvInfo(
             bin_python = assembled.bin_python,
             imports = imports_depset,
+            runtime_runfiles = runfiles,
             transitive_sources = srcs_depset,
             runtime_files = runtime_files,
         ),
@@ -115,7 +117,7 @@ def _venv_providers(ctx, venv, executable = None, include_sources = False):
     runfiles = venv.runfiles
     if include_sources:
         runfiles = runfiles.merge(ctx.runfiles(transitive_files = venv.info.transitive_sources))
-    return [
+    providers = [
         DefaultInfo(
             files = depset([executable]) if executable != None else None,
             executable = executable,
@@ -131,6 +133,19 @@ def _venv_providers(ctx, venv, executable = None, include_sources = False):
             extensions = ["py"],
         ),
     ]
+
+    # Auto bytecode: the venv always declares compile actions for its own
+    # srcs and merges its dep closure's bytecode. Actions only execute when a
+    # launcher opts into a pyc mode, and every launcher sharing this
+    # configured venv shares them.
+    if pyc_wired(ctx):
+        providers.append(make_pyc_info(
+            compile_pycs(ctx, own_compile_sources(ctx.attr.srcs)),
+            deps = ctx.attr.deps,
+            resolutions = getattr(ctx.attr, "resolutions", {}).values(),
+        ))
+
+    return providers
 
 def _py_venv_rule_impl(ctx):
     """A virtualenv target whose own executable activates the venv and
@@ -246,6 +261,7 @@ does not reinsert a wheel.
 })
 
 _lib_attrs.update(**_py_library.attrs)
+_lib_attrs.update(**PYC_ATTRS)
 
 # Attrs only the executable variant reads — launcher template, REPL
 # flags, env vars forwarded via RunEnvironmentInfo.
@@ -433,6 +449,12 @@ def py_binary_with_venv(py_rule, name, main, srcs = [], deps = [], data = [], im
             visibility = visibility,
         )
 
+    # `select()` values pass through untouched; the rule attr's `values`
+    # validates each branch at analysis time.
+    pyc = kwargs.pop("pyc", "")
+    if type(pyc) == "string" and pyc not in ("", "source", "pyc", "pyc_only"):
+        fail("pyc must be one of source, pyc, or pyc_only; got {}".format(repr(pyc)))
+
     py_rule(
         name = name,
         main = main,
@@ -448,6 +470,7 @@ def py_binary_with_venv(py_rule, name, main, srcs = [], deps = [], data = [], im
         visibility = visibility,
         venv = ":" + venv_label,
         isolated = isolated,
+        pyc = pyc,
         **kwargs
     )
 

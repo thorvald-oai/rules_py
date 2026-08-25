@@ -12,7 +12,8 @@ load("@hermetic_launcher//launcher:lib.bzl", "launcher")
 load("//py/private:py_info.bzl", "PyInfo")
 load("//py/private:py_info_interop.bzl", "RulesPythonPyInfo", "get_py_info", "has_py_info")
 load("//py/private:py_semantics.bzl", _py_semantics = "semantics")
-load("//py/private:transitions.bzl", "reset_python_flags_transition")
+load("//py/private:pyc.bzl", "FirstPartyPycInfo", "FirstPartyPycModeInfo")
+load("//py/private:transitions.bzl", "python_transition", "reset_python_flags_transition")
 load(":types.bzl", "VirtualenvInfo", "venv_root")
 
 # Identifiers the launcher always sets to the analysing rule's contextual
@@ -20,6 +21,24 @@ load(":types.bzl", "VirtualenvInfo", "venv_root")
 # `env_inherit` entry can't let an outer shell shadow the contextual
 # label at run time.
 _CONTEXTUAL_ENV_KEYS = ("BAZEL_TARGET", "BAZEL_WORKSPACE", "BAZEL_TARGET_NAME")
+
+def _single_venv(value):
+    # A transitioned label attr may present as a single-element list.
+    if type(value) == "list":
+        if len(value) != 1:
+            fail("venv must resolve to exactly one target, got {}".format(len(value)))
+        return value[0]
+    return value
+
+def _pyc_mode(ctx):
+    mode = ctx.attr.pyc
+    if mode == "":
+        mode = ctx.attr._pyc_flag[BuildSettingInfo].value
+    if mode == "pyc_only" and ctx.configuration.coverage_enabled:
+        # Coverage instruments .py sources; sourceless runfiles would silently
+        # collect empty coverage data.
+        return "source"
+    return mode
 
 def _py_venv_exec_impl(ctx):
     # The launcher itself doesn't need a python toolchain — it just
@@ -37,8 +56,44 @@ def _py_venv_exec_impl(ctx):
     if not main.basename.endswith(".py"):
         fail("main must end in '.py', got: " + main.basename)
 
-    venv = ctx.attr.venv
+    venv = _single_venv(ctx.attr.venv)
     vinfo = venv[VirtualenvInfo]
+
+    bytecode_mode = _pyc_mode(ctx)
+    include_pyc = bytecode_mode in ("pyc", "pyc_only")
+    use_pyc = bytecode_mode == "pyc_only"
+    pyc_info = None
+    entrypoint = main
+    if include_pyc:
+        if FirstPartyPycInfo not in venv:
+            fail("{}: bytecode mode requires a rules_py py_venv, which always carries first-party bytecode mappings".format(ctx.label))
+        pyc_info = venv[FirstPartyPycInfo]
+    if use_pyc:
+        # Only sourceless mode needs reverse lookup/completeness validation;
+        # ordinary pyc mode merely merges the provider's depsets.
+        #
+        # Keyed by runfiles path: the venv is in a Python-transitioned
+        # configuration while `main` remains in the launcher's, so generated
+        # sources can have different exec paths but the same runfiles path.
+        pyc_by_source = {entry.source.short_path: entry for entry in pyc_info.entries.to_list()}
+        missing = []
+        non_py_sources = []
+        for src in vinfo.transitive_sources.to_list():
+            if src.extension != "py":
+                non_py_sources.append(src)
+            elif src.short_path not in pyc_by_source:
+                missing.append(src.short_path)
+        if missing:
+            fail("{}: pyc_only could not compile all first-party sources: {}".format(
+                ctx.label,
+                ", ".join(sorted(missing)),
+            ))
+        main_entry = pyc_by_source.get(main.short_path)
+        if main_entry == None:
+            fail(("{}: pyc_only requested but no bytecode was produced for main {}. " +
+                  "The source must be directly owned by a rules_py py_* target and the exec " +
+                  "Python must exactly match the target Python version.").format(ctx.label, main))
+        entrypoint = main_entry.pyc
 
     # Merge env vars: start from the venv's `env` (if any), then
     # overlay the binary's own — binary wins on key conflicts. Same
@@ -98,7 +153,7 @@ def _py_venv_exec_impl(ctx):
             transformed_args = transformed_args,
         )
     embedded_args, transformed_args = launcher.append_runfile(
-        file = main,
+        file = entrypoint,
         embedded_args = embedded_args,
         transformed_args = transformed_args,
     )
@@ -115,14 +170,27 @@ def _py_venv_exec_impl(ctx):
         for target in ctx.attr.data
         if has_py_info(target)
     ]
+
+    # First-party import files for the selected bytecode mode. Data targets
+    # stay in source form; their sources merge as-is below.
+    if use_pyc:
+        # The pyc outputs are declared sibling to their sources, so their
+        # natural runfiles paths are the required legacy ``foo.pyc`` paths.
+        # Non-.py srcs (.pyi, .so, data) are not bytecode candidates and ship as-is.
+        venv_files = depset(direct = non_py_sources, transitive = [pyc_info.legacy_files])
+    elif include_pyc:
+        venv_files = depset(transitive = [vinfo.transitive_sources, pyc_info.pycache_files])
+    else:
+        venv_files = vinfo.transitive_sources
+
     runfiles = ctx.runfiles(
-        files = ctx.files.data + [main],
-        transitive_files = depset(
-            transitive = [vinfo.transitive_sources] + data_sources,
-        ),
-    ).merge_all(
-        [target[DefaultInfo].default_runfiles for target in ctx.attr.data] +
-        [venv[DefaultInfo].default_runfiles],
+        # `main` may be outside the venv's `srcs`; source-retaining modes
+        # continue to attach it independently. In pyc_only it is supplied by
+        # `venv_files` as the compiled entrypoint.
+        files = ctx.files.data + ([] if use_pyc else [main]),
+        transitive_files = depset(transitive = [venv_files] + data_sources),
+    ).merge(vinfo.runtime_runfiles).merge_all(
+        [target[DefaultInfo].default_runfiles for target in ctx.attr.data],
     )
 
     instrumented_files_info = coverage_common.instrumented_files_info(
@@ -134,7 +202,7 @@ def _py_venv_exec_impl(ctx):
 
     providers = [
         DefaultInfo(
-            files = depset([executable_launcher, main]),
+            files = depset([executable_launcher, entrypoint]),
             executable = executable_launcher,
             runfiles = runfiles,
         ),
@@ -154,7 +222,10 @@ def _py_venv_exec_impl(ctx):
             environment = passed_env,
             inherited_environment = inherited_env,
         ),
+        FirstPartyPycModeInfo(mode = bytecode_mode),
     ]
+    if include_pyc:
+        providers.append(pyc_info)
 
     if ctx.attr._emit_rules_python_providers[BuildSettingInfo].value:
         providers.append(RulesPythonPyInfo(
@@ -184,6 +255,7 @@ Required. Must be a label pointing to a `.py` source file.
     "venv": attr.label(
         providers = [[VirtualenvInfo]],
         mandatory = True,
+        cfg = python_transition,
         doc = """Internal: set by the `py_binary_with_venv` macro for
 every public `py_binary` / `py_test` invocation (the macro splits the
 call into a py_venv target + a rule call routed at it). Not a
@@ -191,10 +263,27 @@ user-facing attribute — direct settings on the rule are blocked at
 the macro layer in `//py:defs.bzl`.
 
 The binary's launcher exec's the referenced venv's `bin/python`; its
-runfiles inherit the venv's default_runfiles for wheels and runtime data,
-and add first-party sources from `VirtualenvInfo.transitive_sources` at
-their usual rlocation paths.
+runfiles inherit the venv's runtime runfiles for wheels and runtime data,
+and add first-party sources (or their compiled bytecode, per `pyc`) at
+their usual rlocation paths. The edge transition forwards this launcher's
+`python_version` choice to the venv's configuration; `pyc` is launcher-only
+— the venv always declares bytecode actions, so every mode shares one
+configured venv.
 """,
+    ),
+    "pyc": attr.string(
+        default = "",
+        values = ["", "source", "pyc", "pyc_only"],
+        doc = """First-party bytecode packaging: `source` ships only `.py`
+sources; `pyc` additionally ships PEP 3147 `__pycache__` bytecode;
+`pyc_only` ships colocated sourceless `.pyc` files. Empty (the default)
+follows the global `--@aspect_rules_py//py:pyc` flag; an explicit value
+pins the mode regardless of the flag. Configurable: `select()` values
+are accepted.""",
+    ),
+    "python_version": attr.string(
+        default = "",
+        doc = "Python version for this direct py_venv_exec consumer. Usually set on py_binary/py_test instead.",
     ),
     "interpreter_options": attr.string_list(
         doc = "Additional options to pass to the Python interpreter in addition to -B and -I passed by rules_py",
@@ -241,6 +330,10 @@ that must match the terminal's Python environment in `deps`.
     ),
     "_emit_rules_python_providers": attr.label(
         default = "//py/private:emit_rules_python_providers",
+    ),
+    "_pyc_flag": attr.label(
+        default = "//py:pyc",
+        providers = [BuildSettingInfo],
     ),
 })
 

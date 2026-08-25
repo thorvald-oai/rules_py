@@ -9,6 +9,11 @@ load(":image_layer_analysis_tests.bzl", "image_layer_analysis_test_suite")
 load(":runtime_wrapper.bzl", "runtime_wrapper")
 load(":tree_artifact.bzl", "symlink_target", "symlink_to_target", "tree_artifact")
 
+exports_files(
+    ["assert_tar_paths.py"],
+    visibility = ["//visibility:public"],
+)
+
 platform(
     name = "aarch64_linux",
     constraint_values = [
@@ -1049,6 +1054,50 @@ assert_tar_listing(
     name = "my_app_layers_fp_test",
     actual = [":platform_layers_fp"],
     expected = "my_app_layers_fp_listing.yaml",
+)
+
+# Tiered first-party groups under each bytecode mode: group tars carry the
+# rewritten first-party files, the default source layer drops pyc_only sources.
+py_image_layer(
+    name = "my_app_layers_fp_pyc",
+    binary = ":my_app_bin",
+    layer_tier = ":my_app_tier",
+    pyc = "pyc",
+)
+
+platform_transition_filegroup(
+    name = "platform_layers_fp_pyc",
+    srcs = [":my_app_layers_fp_pyc"],
+    target_platform = ":x86_64_linux",
+)
+
+assert_tar_listing(
+    name = "my_app_layers_fp_pyc_test",
+    actual = [":platform_layers_fp_pyc"],
+    exclude = ["python_interpreters"],
+    expected = "my_app_layers_fp_pyc_listing.yaml",
+    pyc = "pyc",
+)
+
+py_image_layer(
+    name = "my_app_layers_fp_pyc_only",
+    binary = ":my_app_bin",
+    layer_tier = ":my_app_tier",
+    pyc = "pyc_only",
+)
+
+platform_transition_filegroup(
+    name = "platform_layers_fp_pyc_only",
+    srcs = [":my_app_layers_fp_pyc_only"],
+    target_platform = ":x86_64_linux",
+)
+
+assert_tar_listing(
+    name = "my_app_layers_fp_pyc_only_test",
+    actual = [":platform_layers_fp_pyc_only"],
+    exclude = ["python_interpreters"],
+    expected = "my_app_layers_fp_pyc_only_listing.yaml",
+    pyc = "pyc_only",
 )
 
 assert_tar_listing(
