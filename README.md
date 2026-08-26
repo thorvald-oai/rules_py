@@ -316,6 +316,73 @@ Cross-compile for Linux from macOS:
 bazel build //:image --platforms=//platforms:linux_amd64
 ```
 
+### Layer compression
+
+Layers are written by bsdtar, so any libarchive write filter can compress them:
+`none`, `gzip` (the default, level 6), `bzip2`, `xz`, `lzma`, `lzop`, `lz4`,
+`lrzip`, `zstd`, and `compress`. The file extension follows the filter, which is
+what image tooling reads the layer's media type from.
+
+`py_layer_tier` sets compression for the layers it names — pip packages, the
+interpreter, and first-party groups:
+
+```starlark
+load("@aspect_rules_py//py:defs.bzl", "py_layer_tier")
+
+py_layer_tier(
+    name = "tier",
+    groups = {
+        "@pip//torch": "heavy",
+        "//src/common": "common",
+    },
+    interpreter_group = "interpreter",
+    compression = {
+        "heavy": ["zstd", "19"],   # [algorithm, level]
+        "common": ["xz"],          # level omitted: libarchive's default
+        "interpreter": ["none"],   # an uncompressed layer
+    },
+)
+```
+
+`py_image_layer` sets compression for the layers it creates itself — the
+`groups` tars, the squashed pip layer (`"packages"`), and the source layer
+(`"default"`) — and takes precedence over the tier for a group both name:
+
+```starlark
+py_image_layer(
+    name = "app_layers",
+    binary = ":app_bin",
+    layer_tier = ":tier",
+    group_compression = {"default": ["zstd", "3"]},
+)
+```
+
+For a compressor libarchive has no filter for, declare a `py_layer_compressor`.
+bsdtar pipes the archive through the program, so anything that reads stdin and
+writes compressed bytes to stdout works:
+
+```starlark
+load("@aspect_rules_py//py:defs.bzl", "py_layer_compressor")
+
+py_layer_compressor(
+    name = "brotli",
+    tool = "//tools:brotli",
+    args = ["-q", "11"],
+    extension = ".tar.br",
+)
+
+py_layer_tier(
+    name = "tier",
+    groups = {"@pip//torch": "heavy"},
+    compressors = {":brotli": "heavy"},
+)
+```
+
+`py_image_layer` accepts the same mapping as `group_compressors` for its own
+tars. Note that `lzop` and `lrzip` are the two filters libarchive implements by
+shelling out to a same-named binary, which a sandboxed action is not guaranteed
+to have — prefer a `py_layer_compressor` there.
+
 ## IDE Integration
 
 `aspect_rules_py` generates standard virtualenv structures that IDEs understand.

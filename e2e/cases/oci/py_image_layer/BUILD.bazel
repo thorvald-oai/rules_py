@@ -657,8 +657,8 @@ assert_tar_ownership(
 
 # Multi-member group coverage: two pip packages mapped to the same group name
 # produce a single merged tar from both install_dirs. Binary also adds
-# pyproject_hooks to make the closure non-trivial. Zstd-compressed to exercise
-# _compression_ext.
+# pyproject_hooks to make the closure non-trivial. Zstd-compressed so the merged
+# tar carries the tier's codec and extension.
 py_binary(
     name = "my_app_multi_bin",
     srcs = ["__main__.py"],
