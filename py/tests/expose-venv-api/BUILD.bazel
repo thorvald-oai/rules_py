@@ -16,6 +16,7 @@ py_binary(
     name = "minimal_bin",
     srcs = ["main.py"],
     expose_venv = True,
+    freethreaded = "yes",
     main = "main.py",
 )
 
@@ -23,6 +24,7 @@ py_test(
     name = "minimal_test",
     srcs = ["main.py"],
     expose_venv = True,
+    freethreaded = "no",
     main = "main.py",
 )
 

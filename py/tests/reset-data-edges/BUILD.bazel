@@ -26,7 +26,8 @@ py_venv(
     srcs = ["main.py"],
     data = [":probe"],
     dep_group = "first",
-    python_version = "3.12",
+    freethreaded = "yes",
+    python_version = "3.13",
     tags = ["manual"],
     deps = [
         ":launcher",
@@ -40,7 +41,8 @@ terminal(
     name = "parent_terminal",
     data = [":probe"],
     dep_group = "parent",
-    python_version = "3.12",
+    freethreaded = "yes",
+    python_version = "3.13",
     tags = ["manual"],
     deps = [":nested_terminal"],
 )
@@ -49,6 +51,7 @@ terminal(
     name = "nested_terminal",
     data = [":probe"],
     dep_group = "nested",
+    freethreaded = "no",
     python_version = "3.13",
     tags = ["manual"],
 )
@@ -58,6 +61,7 @@ py_venv(
     srcs = ["main.py"],
     data = [":probe"],
     dep_group = "second",
+    freethreaded = "no",
     python_version = "3.12",
     tags = ["manual"],
     deps = [

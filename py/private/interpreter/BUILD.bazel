@@ -42,6 +42,24 @@ string_flag(
     visibility = ["//py:__subpackages__"],
 )
 
+# Preserve the caller's GIL mode across nested terminal overrides.
+string_flag(
+    name = "baseline_freethreaded",
+    build_setting_default = "<unset>",
+    values = [
+        "<unset>",
+        "no",
+        "yes",
+    ],
+    visibility = ["//py:__subpackages__"],
+)
+
+string_flag(
+    name = "baseline_rules_python_freethreaded",
+    build_setting_default = "<unset>",
+    visibility = ["//py:__subpackages__"],
+)
+
 # Interpreter feature exclusions. Pass one or more --exclude_feature flags to
 # strip optional components from interpreter filegroups. Supported values:
 #   headers, docs, tkinter, idle, ensurepip, config, pydoc, lib2to3, turtle

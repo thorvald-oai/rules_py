@@ -11,6 +11,11 @@ _PYTHON_VERSION_BASELINE_FLAG = "@aspect_rules_py//py/private/interpreter:baseli
 _RPY_VERSION_FLAG = "@rules_python//python/config_settings:python_version"
 _RPY_VERSION_BASELINE_FLAG = "@aspect_rules_py//py/private/interpreter:baseline_rules_python_version"
 
+_FREETHREADED_FLAG = "@aspect_rules_py//py/private/interpreter:freethreaded"
+_FREETHREADED_BASELINE_FLAG = "@aspect_rules_py//py/private/interpreter:baseline_freethreaded"
+_RPY_FREETHREADED_FLAG = "@rules_python//python/config_settings:py_freethreaded"
+_RPY_FREETHREADED_BASELINE_FLAG = "@aspect_rules_py//py/private/interpreter:baseline_rules_python_freethreaded"
+
 _BASELINE_UNSET = "<unset>"
 
 # Every terminal-attr-driven flag with its baseline shadow. The attr value
@@ -21,10 +26,14 @@ _BASELINE_UNSET = "<unset>"
 _FLAG_BASELINE_PAIRS = [
     (PYTHON_VERSION_FLAG, _PYTHON_VERSION_BASELINE_FLAG),
     (_RPY_VERSION_FLAG, _RPY_VERSION_BASELINE_FLAG),
+    (_RPY_FREETHREADED_FLAG, _RPY_FREETHREADED_BASELINE_FLAG),
     (DEP_GROUP_FLAG, _DEP_GROUP_BASELINE_FLAG),
 ]
 
-_ALL_FLAGS = [flag for pair in _FLAG_BASELINE_PAIRS for flag in pair]
+_ALL_FLAGS = [flag for pair in _FLAG_BASELINE_PAIRS for flag in pair] + [
+    _FREETHREADED_FLAG,
+    _FREETHREADED_BASELINE_FLAG,
+]
 
 def _baseline(settings, flag, current):
     baseline = settings[flag]
@@ -35,8 +44,26 @@ def _baseline(settings, flag, current):
 def _python_version(settings):
     return settings[PYTHON_VERSION_FLAG] or settings[_RPY_VERSION_FLAG]
 
+def _freethreaded_mode(settings):
+    return "yes" if settings[_FREETHREADED_FLAG] else "no"
+
 def _python_transition_impl(settings, attr):
     acc = {}
+    acc[_FREETHREADED_BASELINE_FLAG] = _baseline(
+        settings,
+        _FREETHREADED_BASELINE_FLAG,
+        _freethreaded_mode(settings),
+    )
+    acc[_RPY_FREETHREADED_BASELINE_FLAG] = _baseline(
+        settings,
+        _RPY_FREETHREADED_BASELINE_FLAG,
+        settings[_RPY_FREETHREADED_FLAG],
+    )
+    mode = getattr(attr, "freethreaded", "") or _freethreaded_mode(settings)
+    acc[_FREETHREADED_FLAG] = mode == "yes"
+
+    # Keep rules_python native extensions on the interpreter's ABI.
+    acc[_RPY_FREETHREADED_FLAG] = mode
     acc[_PYTHON_VERSION_BASELINE_FLAG] = _baseline(
         settings,
         _PYTHON_VERSION_BASELINE_FLAG,
@@ -84,7 +111,11 @@ python_transition = transition(
 # clear the scratch state so data targets share the caller's canonical
 # configuration.
 def _reset_python_flags_transition_impl(settings, _attr):
-    acc = {}
+    mode = _baseline(settings, _FREETHREADED_BASELINE_FLAG, _freethreaded_mode(settings))
+    acc = {
+        _FREETHREADED_FLAG: mode == "yes",
+        _FREETHREADED_BASELINE_FLAG: _BASELINE_UNSET,
+    }
     for flag, baseline_flag in _FLAG_BASELINE_PAIRS:
         acc[flag] = _baseline(settings, baseline_flag, settings[flag])
         acc[baseline_flag] = _BASELINE_UNSET

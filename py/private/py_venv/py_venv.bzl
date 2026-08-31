@@ -188,6 +188,15 @@ Only works with the Aspect rules_py uv machinery.
     "python_version": attr.string(
         doc = """Whether to build this target and its transitive deps for a specific python version.""",
     ),
+    "freethreaded": attr.string(
+        default = "",
+        values = ["", "no", "yes"],
+        doc = """Select the free-threaded interpreter and native-extension ABI.
+
+"yes" enables free threading, "no" disables it, and the default empty string
+inherits the caller's mode. Runtime data edges restore the caller's mode.
+""",
+    ),
     "package_collisions": attr.string(
         doc = """What to do when metadata-resolved wheel contents collide.
 
@@ -333,6 +342,7 @@ _VENV_ONLY_ATTRS = [
     "package_collisions",
     "include_system_site_packages",
     "python_version",
+    "freethreaded",
     "dep_group",
 ]
 
